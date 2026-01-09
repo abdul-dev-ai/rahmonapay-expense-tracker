@@ -13,22 +13,20 @@ import os
 USE_POSTGRES = os.environ.get('DATABASE_URL') is not None
 
 if USE_POSTGRES:
-    import psycopg2
-    from psycopg2 import pool
+    import pg8000.native as pg8000
     from urllib.parse import urlparse
     
     # Parse database URL
     db_url = urlparse(os.environ.get('DATABASE_URL'))
     
-    # Create connection pool
-    db_pool = psycopg2.pool.SimpleConnectionPool(
-        1, 20,
-        database=db_url.path[1:],
-        user=db_url.username,
-        password=db_url.password,
-        host=db_url.hostname,
-        port=db_url.port
-    )
+    def get_pg_connection():
+        return pg8000.Connection(
+            user=db_url.username,
+            password=db_url.password,
+            host=db_url.hostname,
+            port=db_url.port or 5432,
+            database=db_url.path[1:]
+        )
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'rahmonapay-secret-key-2025')
@@ -39,17 +37,14 @@ DEFAULT_BUDGET = 0
 def get_db_connection():
     """Get database connection (PostgreSQL or SQLite)"""
     if USE_POSTGRES:
-        return db_pool.getconn()
+        return get_pg_connection()
     else:
         return sqlite3.connect(DB_NAME)
 
 
 def release_db_connection(conn):
     """Release database connection back to pool"""
-    if USE_POSTGRES:
-        db_pool.putconn(conn)
-    else:
-        conn.close()
+    conn.close()
 NEWSLETTER_FILE = "newsletter_subscribers.xlsx"
 
 

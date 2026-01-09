@@ -9,63 +9,23 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, PatternFill, Alignment
 import os
 
-# Check if PostgreSQL is available
-USE_POSTGRES = os.environ.get('DATABASE_URL') is not None
-
-if USE_POSTGRES:
-    import pg8000.native as pg8000
-    from urllib.parse import urlparse
-    
-    # Parse database URL
-    db_url = urlparse(os.environ.get('DATABASE_URL'))
-    
-    def get_pg_connection():
-        return pg8000.Connection(
-            user=db_url.username,
-            password=db_url.password,
-            host=db_url.hostname,
-            port=db_url.port or 5432,
-            database=db_url.path[1:]
-        )
-
 app = Flask(__name__)
-app.secret_key = os.environ.get('SECRET_KEY', 'rahmonapay-secret-key-2025')
+app.secret_key = "rahmonapay-secret-key-2025"
 DB_NAME = "expenses.db"
 DEFAULT_BUDGET = 0
-
-
-def get_db_connection():
-    """Get database connection (PostgreSQL or SQLite)"""
-    if USE_POSTGRES:
-        return get_pg_connection()
-    else:
-        return sqlite3.connect(DB_NAME)
-
-
-def release_db_connection(conn):
-    """Release database connection back to pool"""
-    conn.close()
 NEWSLETTER_FILE = "newsletter_subscribers.xlsx"
 
 
 def init_db():
     """Initialize the database with expenses table"""
     try:
-        conn = get_db_connection()
+        conn = sqlite3.connect(DB_NAME)
         cur = conn.cursor()
         
-        # Auto-increment syntax differs between SQLite and PostgreSQL
-        if USE_POSTGRES:
-            serial_type = "SERIAL PRIMARY KEY"
-            timestamp_default = "DEFAULT CURRENT_TIMESTAMP"
-        else:
-            serial_type = "INTEGER PRIMARY KEY AUTOINCREMENT"
-            timestamp_default = "DEFAULT CURRENT_TIMESTAMP"
-        
         # Users table with newsletter field and phone
-        cur.execute(f"""
+        cur.execute("""
             CREATE TABLE IF NOT EXISTS users (
-                id {serial_type},
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
                 username TEXT UNIQUE NOT NULL,
                 email TEXT UNIQUE NOT NULL,
                 phone TEXT,
@@ -73,14 +33,14 @@ def init_db():
                 newsletter_subscribed INTEGER DEFAULT 0,
                 sms_alerts INTEGER DEFAULT 0,
                 email_alerts INTEGER DEFAULT 1,
-                created_at TIMESTAMP {timestamp_default}
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
         
-        # Expenses table
-        cur.execute(f"""
+        # Expenses table (now with user_id AND budget_type)
+        cur.execute("""
             CREATE TABLE IF NOT EXISTS expenses (
-                id {serial_type},
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
                 budget_type TEXT NOT NULL,
                 category TEXT NOT NULL,
@@ -91,10 +51,10 @@ def init_db():
             )
         """)
         
-        # Settings table
-        cur.execute(f"""
+        # Settings table (now with user_id AND budget_type)
+        cur.execute("""
             CREATE TABLE IF NOT EXISTS settings (
-                id {serial_type},
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
                 budget_type TEXT NOT NULL,
                 budget REAL NOT NULL DEFAULT 0,
@@ -103,23 +63,23 @@ def init_db():
             )
         """)
         
-        # Alerts table
-        cur.execute(f"""
+        # Alerts table to track sent alerts
+        cur.execute("""
             CREATE TABLE IF NOT EXISTS alerts (
-                id {serial_type},
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
                 budget_type TEXT NOT NULL,
                 alert_type TEXT NOT NULL,
                 message TEXT NOT NULL,
-                sent_at TIMESTAMP {timestamp_default},
+                sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (user_id) REFERENCES users (id)
             )
         """)
         
         conn.commit()
-        release_db_connection(conn)
+        conn.close()
         print("✓ Database initialized successfully")
-    except Exception as e:
+    except sqlite3.Error as e:
         print(f"✗ Database error: {e}")
 
 
@@ -444,7 +404,7 @@ def login_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
         if 'user_id' not in session:
-            return redirect(url_for('login'))
+            return redirect(url_for('login_page'))
         return f(*args, **kwargs)
     return decorated_function
 
@@ -664,7 +624,7 @@ def signup():
             
             print(f"✓ User created successfully: {username} (ID: {user_id})")
             flash("Account created successfully! Please log in.", "success")
-            return redirect(url_for("login"))
+            return redirect(url_for("login_page"))
             
         except sqlite3.Error as e:
             print(f"✗ Database error during signup: {e}")
@@ -679,7 +639,7 @@ def signup():
 
 
 @app.route("/login", methods=["GET", "POST"])
-def login():
+def login_page():
     """Login route"""
     if request.method == "POST":
         username = request.form.get("username", "").strip()
@@ -687,7 +647,7 @@ def login():
         
         if not username or not password:
             flash("Username and password are required", "error")
-            return redirect(url_for("login"))
+            return redirect(url_for("login_page"))
         
         try:
             conn = sqlite3.connect(DB_NAME)
@@ -703,12 +663,12 @@ def login():
                 return redirect(url_for("index"))
             else:
                 flash("Invalid username or password", "error")
-                return redirect(url_for("login"))
+                return redirect(url_for("login_page"))
                 
         except sqlite3.Error as e:
             print(f"Database error: {e}")
             flash("An error occurred. Please try again.", "error")
-            return redirect(url_for("login"))
+            return redirect(url_for("login_page"))
     
     return render_template("login.html")
 
@@ -719,7 +679,7 @@ def logout():
     username = session.get('username', 'User')
     session.clear()
     flash(f"Goodbye, {username}!", "success")
-    return redirect(url_for("login"))
+    return redirect(url_for("login_page"))
 
 
 @app.route("/add_expense", methods=["POST"])
@@ -1156,6 +1116,93 @@ def dashboard_stats():
         })
 
 
+@app.route("/init-database")
+def initialize_database():
+    """Manual database initialization endpoint"""
+    try:
+        init_db()
+        init_newsletter_spreadsheet()
+        return """
+        <html>
+        <head>
+            <title>Database Initialized</title>
+            <style>
+                body {
+                    font-family: system-ui, sans-serif;
+                    background: #0f172a;
+                    color: #e5e7eb;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    height: 100vh;
+                    margin: 0;
+                }
+                .message {
+                    text-align: center;
+                    padding: 40px;
+                    background: #1e293b;
+                    border-radius: 20px;
+                    border: 2px solid #38bdf8;
+                }
+                h1 { color: #38bdf8; margin-bottom: 20px; }
+                a {
+                    display: inline-block;
+                    margin-top: 20px;
+                    padding: 12px 24px;
+                    background: linear-gradient(135deg, #38bdf8, #2563eb);
+                    color: white;
+                    text-decoration: none;
+                    border-radius: 10px;
+                    font-weight: 600;
+                }
+                a:hover { transform: translateY(-2px); }
+            </style>
+        </head>
+        <body>
+            <div class="message">
+                <h1>✓ Database Initialized Successfully!</h1>
+                <p>Your RahmonaPay database has been set up and is ready to use.</p>
+                <a href="/login">Go to Login Page</a>
+            </div>
+        </body>
+        </html>
+        """
+    except Exception as e:
+        return f"""
+        <html>
+        <head>
+            <title>Database Error</title>
+            <style>
+                body {{
+                    font-family: system-ui, sans-serif;
+                    background: #0f172a;
+                    color: #e5e7eb;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    height: 100vh;
+                    margin: 0;
+                }}
+                .message {{
+                    text-align: center;
+                    padding: 40px;
+                    background: #1e293b;
+                    border-radius: 20px;
+                    border: 2px solid #ef4444;
+                }}
+                h1 {{ color: #ef4444; margin-bottom: 20px; }}
+            </style>
+        </head>
+        <body>
+            <div class="message">
+                <h1>✗ Error Initializing Database</h1>
+                <p>Error: {str(e)}</p>
+            </div>
+        </body>
+        </html>
+        """
+
+
 if __name__ == "__main__":
     init_db()
     init_newsletter_spreadsheet()
@@ -1172,9 +1219,4 @@ if __name__ == "__main__":
     print("=" * 60)
     print("Press Ctrl+C to stop the server")
     print("=" * 60)
-    
-    # Get port from environment variable (for deployment) or use 5000 for local
-    port = int(os.environ.get("PORT", 5000))
-    
-    # Use 0.0.0.0 to allow external connections (needed for deployment)
-    app.run(debug=False, host='0.0.0.0', port=port)
+    app.run(debug=True, host='127.0.0.1', port=5000)

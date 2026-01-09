@@ -9,7 +9,7 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, PatternFill, Alignment
 import os
 
-app = Flask(__name__)
+app = app = Flask(__name__, template_folder='.')
 app.secret_key = "rahmonapay-secret-key-2025"
 DB_NAME = "expenses.db"
 DEFAULT_BUDGET = 0
@@ -404,7 +404,7 @@ def login_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
         if 'user_id' not in session:
-            return redirect(url_for('login'))
+            return redirect(url_for('login_page'))
         return f(*args, **kwargs)
     return decorated_function
 
@@ -624,7 +624,7 @@ def signup():
             
             print(f"✓ User created successfully: {username} (ID: {user_id})")
             flash("Account created successfully! Please log in.", "success")
-            return redirect(url_for("login"))
+            return redirect(url_for("login_page"))
             
         except sqlite3.Error as e:
             print(f"✗ Database error during signup: {e}")
@@ -639,7 +639,7 @@ def signup():
 
 
 @app.route("/login", methods=["GET", "POST"])
-def login():
+def login_page():
     """Login route"""
     if request.method == "POST":
         username = request.form.get("username", "").strip()
@@ -647,7 +647,7 @@ def login():
         
         if not username or not password:
             flash("Username and password are required", "error")
-            return redirect(url_for("login"))
+            return redirect(url_for("login_page"))
         
         try:
             conn = sqlite3.connect(DB_NAME)
@@ -663,12 +663,12 @@ def login():
                 return redirect(url_for("index"))
             else:
                 flash("Invalid username or password", "error")
-                return redirect(url_for("login"))
+                return redirect(url_for("login_page"))
                 
         except sqlite3.Error as e:
             print(f"Database error: {e}")
             flash("An error occurred. Please try again.", "error")
-            return redirect(url_for("login"))
+            return redirect(url_for("login_page"))
     
     return render_template("login.html")
 
@@ -679,7 +679,7 @@ def logout():
     username = session.get('username', 'User')
     session.clear()
     flash(f"Goodbye, {username}!", "success")
-    return redirect(url_for("login"))
+    return redirect(url_for("login_page"))
 
 
 @app.route("/add_expense", methods=["POST"])

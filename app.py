@@ -9,23 +9,68 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, PatternFill, Alignment
 import os
 
-app = app = Flask(__name__, template_folder='.')
-app.secret_key = "rahmonapay-secret-key-2025"
+# Check if PostgreSQL is available
+USE_POSTGRES = os.environ.get('DATABASE_URL') is not None
+
+if USE_POSTGRES:
+    import psycopg2
+    from psycopg2 import pool
+    from urllib.parse import urlparse
+    
+    # Parse database URL
+    db_url = urlparse(os.environ.get('DATABASE_URL'))
+    
+    # Create connection pool
+    db_pool = psycopg2.pool.SimpleConnectionPool(
+        1, 20,
+        database=db_url.path[1:],
+        user=db_url.username,
+        password=db_url.password,
+        host=db_url.hostname,
+        port=db_url.port
+    )
+
+app = Flask(__name__)
+app.secret_key = os.environ.get('SECRET_KEY', 'rahmonapay-secret-key-2025')
 DB_NAME = "expenses.db"
 DEFAULT_BUDGET = 0
+
+
+def get_db_connection():
+    """Get database connection (PostgreSQL or SQLite)"""
+    if USE_POSTGRES:
+        return db_pool.getconn()
+    else:
+        return sqlite3.connect(DB_NAME)
+
+
+def release_db_connection(conn):
+    """Release database connection back to pool"""
+    if USE_POSTGRES:
+        db_pool.putconn(conn)
+    else:
+        conn.close()
 NEWSLETTER_FILE = "newsletter_subscribers.xlsx"
 
 
 def init_db():
     """Initialize the database with expenses table"""
     try:
-        conn = sqlite3.connect(DB_NAME)
+        conn = get_db_connection()
         cur = conn.cursor()
         
+        # Auto-increment syntax differs between SQLite and PostgreSQL
+        if USE_POSTGRES:
+            serial_type = "SERIAL PRIMARY KEY"
+            timestamp_default = "DEFAULT CURRENT_TIMESTAMP"
+        else:
+            serial_type = "INTEGER PRIMARY KEY AUTOINCREMENT"
+            timestamp_default = "DEFAULT CURRENT_TIMESTAMP"
+        
         # Users table with newsletter field and phone
-        cur.execute("""
+        cur.execute(f"""
             CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id {serial_type},
                 username TEXT UNIQUE NOT NULL,
                 email TEXT UNIQUE NOT NULL,
                 phone TEXT,
@@ -33,14 +78,14 @@ def init_db():
                 newsletter_subscribed INTEGER DEFAULT 0,
                 sms_alerts INTEGER DEFAULT 0,
                 email_alerts INTEGER DEFAULT 1,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                created_at TIMESTAMP {timestamp_default}
             )
         """)
         
-        # Expenses table (now with user_id AND budget_type)
-        cur.execute("""
+        # Expenses table
+        cur.execute(f"""
             CREATE TABLE IF NOT EXISTS expenses (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id {serial_type},
                 user_id INTEGER NOT NULL,
                 budget_type TEXT NOT NULL,
                 category TEXT NOT NULL,
@@ -51,10 +96,10 @@ def init_db():
             )
         """)
         
-        # Settings table (now with user_id AND budget_type)
-        cur.execute("""
+        # Settings table
+        cur.execute(f"""
             CREATE TABLE IF NOT EXISTS settings (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id {serial_type},
                 user_id INTEGER NOT NULL,
                 budget_type TEXT NOT NULL,
                 budget REAL NOT NULL DEFAULT 0,
@@ -63,23 +108,23 @@ def init_db():
             )
         """)
         
-        # Alerts table to track sent alerts
-        cur.execute("""
+        # Alerts table
+        cur.execute(f"""
             CREATE TABLE IF NOT EXISTS alerts (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id {serial_type},
                 user_id INTEGER NOT NULL,
                 budget_type TEXT NOT NULL,
                 alert_type TEXT NOT NULL,
                 message TEXT NOT NULL,
-                sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                sent_at TIMESTAMP {timestamp_default},
                 FOREIGN KEY (user_id) REFERENCES users (id)
             )
         """)
         
         conn.commit()
-        conn.close()
+        release_db_connection(conn)
         print("✓ Database initialized successfully")
-    except sqlite3.Error as e:
+    except Exception as e:
         print(f"✗ Database error: {e}")
 
 
@@ -404,7 +449,7 @@ def login_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
         if 'user_id' not in session:
-            return redirect(url_for('login_page'))
+            return redirect(url_for('login'))
         return f(*args, **kwargs)
     return decorated_function
 
@@ -624,7 +669,7 @@ def signup():
             
             print(f"✓ User created successfully: {username} (ID: {user_id})")
             flash("Account created successfully! Please log in.", "success")
-            return redirect(url_for("login_page"))
+            return redirect(url_for("login"))
             
         except sqlite3.Error as e:
             print(f"✗ Database error during signup: {e}")
@@ -639,7 +684,7 @@ def signup():
 
 
 @app.route("/login", methods=["GET", "POST"])
-def login_page():
+def login():
     """Login route"""
     if request.method == "POST":
         username = request.form.get("username", "").strip()
@@ -647,7 +692,7 @@ def login_page():
         
         if not username or not password:
             flash("Username and password are required", "error")
-            return redirect(url_for("login_page"))
+            return redirect(url_for("login"))
         
         try:
             conn = sqlite3.connect(DB_NAME)
@@ -663,12 +708,12 @@ def login_page():
                 return redirect(url_for("index"))
             else:
                 flash("Invalid username or password", "error")
-                return redirect(url_for("login_page"))
+                return redirect(url_for("login"))
                 
         except sqlite3.Error as e:
             print(f"Database error: {e}")
             flash("An error occurred. Please try again.", "error")
-            return redirect(url_for("login_page"))
+            return redirect(url_for("login"))
     
     return render_template("login.html")
 
@@ -679,7 +724,7 @@ def logout():
     username = session.get('username', 'User')
     session.clear()
     flash(f"Goodbye, {username}!", "success")
-    return redirect(url_for("login_page"))
+    return redirect(url_for("login"))
 
 
 @app.route("/add_expense", methods=["POST"])
@@ -1132,4 +1177,9 @@ if __name__ == "__main__":
     print("=" * 60)
     print("Press Ctrl+C to stop the server")
     print("=" * 60)
-    app.run(debug=True, host='127.0.0.1', port=5000)
+    
+    # Get port from environment variable (for deployment) or use 5000 for local
+    port = int(os.environ.get("PORT", 5000))
+    
+    # Use 0.0.0.0 to allow external connections (needed for deployment)
+    app.run(debug=False, host='0.0.0.0', port=port)
